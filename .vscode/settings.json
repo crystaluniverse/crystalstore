@@ -1,0 +1,7 @@
+{
+    "crystal-lang.bashOnWindows": true,
+    "crystal-lang.completion": true,
+    "crystal-lang.hover": true,
+    "crystal-lang.implementations": true,
+    "crystal-lang.server": "/usr/bin/scry"
+}

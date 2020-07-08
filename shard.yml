@@ -1,0 +1,15 @@
+name: crystalstore
+version: 0.1.0
+
+authors:
+  - hamdy <hamdy.a.farag@gmail.com>
+
+dependencies:
+  bcdb:
+    github: crystaluniverse/bcdb-rest.cr
+  msgpack:
+    github: crystal-community/msgpack-crystal
+
+crystal: 0.34.0
+
+license: MIT
