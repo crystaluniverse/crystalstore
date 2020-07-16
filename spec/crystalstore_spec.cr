@@ -84,6 +84,8 @@ describe CrystalStore::Store do
     x << "Hello world"
     x.seek(0)
     s = Bytes.new(10)
+    puts x.read s 
+    puts "**"
     puts String.new s
 end
 end

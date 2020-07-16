@@ -263,6 +263,18 @@ class CrystalStore::File < CrystalStore::Model
     
     def initialize (@name, @id=nil, @meta=nil); end
 
+    def self.exists?(db : Bcdb::Client, path : String)
+        basename = Path.new("/", path).basename
+        begin
+            parent, parent_parent = Dir.get_parents db: db, path: path
+            if parent.file_exists?(basename)
+                return true
+            end
+        rescue exception; 
+        end
+        return false
+    end
+
     def self.touch(db : Bcdb::Client, path : String, mode : Int16, flags : Int32, binary : Bool)
         basename = Path.new("/", path).basename
 

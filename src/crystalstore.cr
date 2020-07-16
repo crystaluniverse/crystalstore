@@ -80,6 +80,10 @@ class CrystalStore::Store
     CrystalStore::File.rm(@db, path)
   end
 
+  def file_exists?(path : String)
+    CrystalStore::File.exists?(@db, path)
+  end
+
   def file_stats(path : String)
     CrystalStore::File.stats(@db, path)
   end

@@ -37,6 +37,9 @@ class CrystalStore::FileDescriptor < IO::Memory
     end
 
     private def get_block_sizes(size)
+        if size == 0
+            return Array(Int32).new
+        end
         no_blocks = (size/@block_size).ceil.to_i32
         sizes = Array(Int32).new(no_blocks) { @block_size.to_i32 }
         rem = size.remainder(@block_size)
@@ -66,7 +69,8 @@ class CrystalStore::FileDescriptor < IO::Memory
         if index == -1
             @file.blocks << block_meta
         end
-        
+        @file.meta.not_nil!.size += size.to_u64
+
         now = Time.utc.to_unix
         @parent.meta.last_access = now
         @parent.meta.last_modified = now
