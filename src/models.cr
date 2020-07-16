@@ -2,6 +2,7 @@ require "msgpack"
 require "time"
 require "bcdb"
 require "./errors"
+require "./file"
 require "json"
 
 class CrystalStore::List
@@ -237,11 +238,15 @@ end
 class CrystalStore::BlockMeta < CrystalStore::Model
     property id : UInt64
     property size : UInt64
-    property hash : String
+    property md5 : String
+
+    def initialize(@id, @size, @md5);end
 end
 
 class CrystalStore::Block < CrystalStore::Model
     property data : String
+
+    def initialize(@data); end
 end
 
 
@@ -302,7 +307,7 @@ class CrystalStore::File < CrystalStore::Model
     end
 
     def self.open(db : Bcdb::Client, path : String, mode : Int16, flags : Int32)
-
+        CrystalStore::FileDescriptor.new db: db, path: path, mode: mode, flags: flags
     end
 
     def self.stats(db : Bcdb::Client, path : String)

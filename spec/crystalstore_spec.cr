@@ -1,5 +1,7 @@
 require "./spec_helper"
 
+require "uuid"
+
 describe CrystalStore::Store do
   # TODO: Write tests
 
@@ -76,9 +78,12 @@ describe CrystalStore::Store do
     puts store.dir_stats path: "/s"
     puts store.dir_list path: "/s"
 
-
-
-    
-
+    name =  "/#{UUID.random.to_s}"
+    store.file_create name, 0, 0, false
+    x = store.file_open name, 0, 0
+    x << "Hello world"
+    x.seek(0)
+    s = Bytes.new(10)
+    puts String.new s
 end
 end
