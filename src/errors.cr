@@ -13,3 +13,7 @@ end
 class CrystalStore::PermissionDeniedErorr < IO::Error
     def initialize(@err : String = ""); end
 end
+
+class CrystalStore::BlockSizeExceededErorr < IO::Error
+    def initialize(@err : String = ""); end
+end

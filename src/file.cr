@@ -12,6 +12,8 @@ class CrystalStore::FileDescriptor < IO::Memory
     property mode : Int16
     property flags : Int32
     property db :  Bcdb::Client
+    getter buffer
+    getter buffer_used_size
 
     def initialize(@db, @path, @mode, @flags)
         basename = Path.new("/", path).basename
@@ -30,6 +32,8 @@ class CrystalStore::FileDescriptor < IO::Memory
         @filename = Path.new("/", path).basename
         @file = @parent.files.not_nil![@filename]
         @bytesize = @file.meta.not_nil!.size.to_i32
+        @buffer =  GC.malloc_atomic(@block_size.to_u32).as(UInt8*)
+        @buffer_used_size = 0
     end
 
     private def update?
@@ -43,7 +47,9 @@ class CrystalStore::FileDescriptor < IO::Memory
         no_blocks = (size/@block_size).ceil.to_i32
         sizes = Array(Int32).new(no_blocks) { @block_size.to_i32 }
         rem = size.remainder(@block_size)
-        sizes[sizes.size-1] = rem
+        if rem > 0
+            sizes[sizes.size-1] = rem
+        end
         sizes
     end
 
@@ -63,21 +69,36 @@ class CrystalStore::FileDescriptor < IO::Memory
         else
             block_id = res[0]
         end
-
+        
         block_meta = CrystalStore::BlockMeta.new id: block_id, size: size.to_u64, md5: md5
 
         if index == -1
             @file.blocks << block_meta
         end
         @file.meta.not_nil!.size += size.to_u64
-
+        @parent.files.not_nil![@filename] = @file
         now = Time.utc.to_unix
         @parent.meta.last_access = now
         @parent.meta.last_modified = now
         @db.update(@parent.id.not_nil!, @parent.dumps)
 
-        @store.update_no_free_blocks (-1_i64 * size.to_i64)
+        #@store.update_no_free_blocks (-1_i64 * size.to_i64)
         @db.update(0, @store.dumps)
+    end
+
+    def flush
+        if @buffer_used_size > 0
+            write_block buffer: @buffer, size: @buffer_used_size, index: -1
+            @pos += @buffer_used_size
+            @bytesize += @buffer_used_size
+            @buffer =  GC.malloc_atomic(@block_size.to_u32).as(UInt8*)
+            @buffer_used_size = 0
+        end
+    end
+
+    def close
+        self.flush
+        @closed = true
     end
 
     def write(slice : Bytes) : Nil
@@ -85,18 +106,34 @@ class CrystalStore::FileDescriptor < IO::Memory
         check_writeable
         check_open
 
-        count = slice.size
+        size = slice.size
+        
+        return if size == 0
 
-        return if count == 0
+        if size > @block_size
+            raise CrystalStore::BlockSizeExceededErorr.new
+        end
+
+        slice = slice.to_unsafe
 
         if !update?
-            sizes = self.get_block_sizes count
-            sizes.each do |size|
-                buffer = GC.malloc_atomic(size.to_u32).as(UInt8*)
-                slice.copy_to(buffer, size)
-                write_block buffer: buffer, size: size, index: -1
-                @pos += size
-                @bytesize += size
+            if @buffer_used_size + size >= @block_size
+                # fill buffer, write, update counters
+                count = @block_size - @buffer_used_size
+                slice.copy_to(@buffer + @buffer_used_size, count)
+                write_block buffer: @buffer, size: @block_size, index: -1
+                @pos += @block_size
+                @bytesize += @block_size
+                @buffer =  GC.malloc_atomic(@block_size.to_u32).as(UInt8*)
+                (slice+count).copy_to(@buffer,  size-count)
+                @pos += (size-count)
+                @bytesize += (size-count)
+                @buffer_used_size = (size-count)
+            else
+                slice.copy_to(@buffer + @buffer_used_size, size)
+                @pos += (size)
+                @bytesize += (size)
+                @buffer_used_size += (size)
             end
         end
     end
@@ -108,15 +145,17 @@ class CrystalStore::FileDescriptor < IO::Memory
     def read(slice : Bytes)
         check_open
     
-        count = slice.size
-
-        count = Math.min(count, @bytesize - @pos)
+        size = slice.size
+        slice = slice.to_unsafe
+        
+        count = Math.min(size, @bytesize - @pos)
         
         sizes = self.get_block_sizes count
         sizes.each_index do |idx|
+            c = sizes[idx]
             block = self.read_block idx
-            slice.copy_from(block.to_unsafe, count=sizes[idx])
-            @pos += size
+            (slice+@pos).copy_from(block.to_unsafe, count=c)
+            @pos += c
         end
         count
     end

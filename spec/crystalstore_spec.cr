@@ -7,10 +7,10 @@ describe CrystalStore::Store do
 
   it "works" do
     store = CrystalStore::Store.new
-    fm  = CrystalStore::FileMeta.new id: 1_u64, block_size:(1024*1024).to_u64, size: 100_u64, is_file: false
-    u = CrystalStore::User.new name: "a"
-    g = CrystalStore::Group.new name: "a"
-    f = CrystalStore::File.new name: "a"
+    # fm  = CrystalStore::FileMeta.new id: 1_u64, block_size:(1024*1024).to_u64, size: 100_u64, is_file: false
+    # u = CrystalStore::User.new name: "a"
+    # g = CrystalStore::Group.new name: "a"
+    # f = CrystalStore::File.new name: "a"
     # d = CrystalStore::Dir.new name: "a"
     # puts d.dumps    
     
@@ -20,8 +20,8 @@ describe CrystalStore::Store do
     # puts "try creating /a again"
     # begin
     #   store.dir_create path: "/a"
-    #   raise Exception.new "should have failed"
-    # rescue exception
+    #   raise Efileception.new "should have failed"
+    # rescue efileception
     # end
 
     
@@ -73,19 +73,30 @@ describe CrystalStore::Store do
     #  puts "moving"
     #  store.dir_move("/aa", "/bb", ovewrite=false)
 
-    puts "creating"
-    # store.dir_create path: "/aa"
-    puts store.dir_stats path: "/s"
-    puts store.dir_list path: "/s"
+    # puts "creating"
+    # # store.dir_create path: "/aa"
+    # puts store.dir_stats path: "/s"
+    # puts store.dir_list path: "/s"
 
     name =  "/#{UUID.random.to_s}"
     store.file_create name, 0, 0, false
-    x = store.file_open name, 0, 0
-    x << "Hello world"
-    x.seek(0)
-    s = Bytes.new(10)
-    puts x.read s 
-    puts "**"
-    puts String.new s
+    file = store.file_open name, 0, 0
+    
+    block_size = 1024*1024
+    data = "b" * 10*1024*1024
+    
+    io =  IO::Memory.new data
+    IO.copy(io, file)
+    
+    file.close
+
+    file = store.file_open name, 0, 0
+    file.size.should eq data.size
+    
+    s = Bytes.new(file.size)
+    file.read s
+    data2 = String.new(s)
+
+    data.should eq data2
 end
 end
