@@ -305,14 +305,6 @@ class CrystalStore::File < CrystalStore::Model
         
         db.update(parent.id.not_nil!, parent.dumps)
 
-        # update parent meta in the dir pointer in parent parent
-        if !parent_parent.nil?
-            parent_parent = parent_parent.not_nil!
-            parent_parent.dirs.not_nil![parent.name].meta.last_access = file_meta.last_access
-            parent_parent.dirs.not_nil![parent.name].meta.last_modified = file_meta.last_modified
-            db.update(parent_parent.id.not_nil!, parent_parent.dumps)
-        end
-
         # update store meta
         store.update_no_free_files -1
         db.update(0, store.dumps)
@@ -403,8 +395,6 @@ class CrystalStore::File < CrystalStore::Model
         if src_path.parent == dest_path.parent
             rename = true
         end
-        puts rename
-        puts "**"
         src_parent, src_parent_parent = CrystalStore::Dir.get_parents db: db, path: src
         if rename
             dest_parent = src_parent
