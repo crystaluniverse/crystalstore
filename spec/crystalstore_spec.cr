@@ -79,7 +79,7 @@ describe CrystalStore::Store do
     # puts store.dir_list path: "/s"
 
     name =  "/#{UUID.random.to_s}"
-    store.file_create name, 0, 0, false
+    store.file_create name, 0, 0, "text/html"
     file = store.file_open name, 0, 0
     
     block_size = 1024*1024

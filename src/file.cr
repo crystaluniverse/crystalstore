@@ -14,6 +14,7 @@ class CrystalStore::FileDescriptor < IO::Memory
     property db :  Bcdb::Client
     getter buffer
     getter buffer_used_size
+    property content_type : String
 
     def initialize(@db, @path, @mode, @flags)
         basename = Path.new("/", path).basename
@@ -32,10 +33,14 @@ class CrystalStore::FileDescriptor < IO::Memory
         @filename = Path.new("/", path).basename
         @file = @parent.files.not_nil![@filename]
         @bytesize = @file.meta.not_nil!.size.to_i32
+        @content_type = @file.meta.not_nil!.content_type
         @buffer =  GC.malloc_atomic(@block_size.to_u32).as(UInt8*)
         @buffer_used_size = 0
     end
 
+    def set_conten_type(content_type : String)
+        @file.meta.not_nil!.content_type = content_type
+    end
     private def update?
         return @pos > 0 && @pos < @bytesize
     end
@@ -76,6 +81,7 @@ class CrystalStore::FileDescriptor < IO::Memory
             @file.blocks << block_meta
         end
         @file.meta.not_nil!.size += size.to_u64
+        
         @parent.files.not_nil![@filename] = @file
         now = Time.utc.to_unix
         @parent.meta.last_access = now

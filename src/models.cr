@@ -275,7 +275,7 @@ class CrystalStore::File < CrystalStore::Model
         return false
     end
 
-    def self.touch(db : Bcdb::Client, path : String, mode : Int16, flags : Int32, binary : Bool)
+    def self.touch(db : Bcdb::Client, path : String, mode : Int16, flags : Int32, content_type : String)
         basename = Path.new("/", path).basename
 
         parent, parent_parent = Dir.get_parents db: db, path: path
@@ -286,7 +286,7 @@ class CrystalStore::File < CrystalStore::Model
 
         store = CrystalStore::StoreMeta.get db
         file_meta = CrystalStore::FileMeta.new block_size: store.block_size, size: 0_u64, is_file: true, mode: mode
-        file_meta.content_type = !binary ? "text" : "bin"
+        file_meta.content_type = content_type
         file = CrystalStore::File.new basename, meta: file_meta
 
         # create dir    

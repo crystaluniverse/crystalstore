@@ -68,8 +68,8 @@ class CrystalStore::Store
     CrystalStore::Dir.mv(@db, src, dest, overwrite)
   end
 
-  def file_create(path : String, mode : Int16, flags : Int32, binary : Bool)
-    CrystalStore::File.touch(@db, path, mode, flags, binary)
+  def file_create(path : String, mode : Int16, flags : Int32, content_type : String)
+    CrystalStore::File.touch(@db, path, mode, flags, content_type)
   end
 
   def file_open(path : String, mode : Int16, flags : Int32)
