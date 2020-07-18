@@ -9,7 +9,7 @@ TODO: Write a description here
    ```yaml
    dependencies:
      crystalstore:
-       github: threefoldtech/crystalstore
+       github: crystaluniverse/crystalstore
    ```
 
 2. Run `shards install`
