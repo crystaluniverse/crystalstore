@@ -88,8 +88,8 @@ class CrystalStore::FileDescriptor < IO::Memory
         @parent.meta.last_modified = now
         @db.update(@parent.id.not_nil!, @parent.dumps)
 
-        #@store.update_no_free_blocks (-1_i64 * size.to_i64)
-        @db.update(0, @store.dumps)
+        @store.update_no_free_blocks (-1_i64 * size.to_i64)
+        @db.update(@store.id.not_nil!, @store.dumps)
     end
 
     def flush

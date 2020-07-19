@@ -60,7 +60,7 @@ end
 class CrystalStore::StoreMeta < CrystalStore::Model
     
     @[MessagePack::Field(key: "f_fsid")]
-    property id : UInt64
+    property id : UInt64?
 
     @[MessagePack::Field(key: "f_bsize")]
     property block_size : UInt64
@@ -92,7 +92,7 @@ class CrystalStore::StoreMeta < CrystalStore::Model
     @[MessagePack::Field(key: "f_namemax")]
     property max_filename : UInt64
 
-    def initialize(@id, @block_size, @no_blocks, @no_files,@mount_flags, @max_filename)
+    def initialize(@block_size, @no_blocks, @no_files,@mount_flags, @max_filename)
         @fragment_size = @block_size
         @no_free_blocks = @no_blocks
         @no_available_blocks = @no_blocks
@@ -112,7 +112,10 @@ class CrystalStore::StoreMeta < CrystalStore::Model
     end
 
     def self.get (db : Bcdb::Client)
-        self.loads(db.get(0)["data"].as(String))
+        ids = db.find({"store_namespace" => db.namespace})
+        store = self.loads(db.get(ids[0])["data"].as(String))
+        store.id = ids[0]
+        store
     end
 end
 
@@ -275,10 +278,10 @@ class CrystalStore::File < CrystalStore::Model
         return false
     end
 
-    def self.touch(db : Bcdb::Client, path : String, mode : Int16, flags : Int32, content_type : String)
+    def self.touch(db : Bcdb::Client, path : String, mode : Int16, flags : Int32, content_type : String, create_parents : Bool = false)
         basename = Path.new("/", path).basename
 
-        parent, parent_parent = Dir.get_parents db: db, path: path
+        parent, parent_parent = Dir.get_parents db: db, path: path, create_parents: create_parents
         
         if parent.dir_exists?(basename) || parent.file_exists?(basename)
             raise CrystalStore::FileExistsError.new path
@@ -307,7 +310,7 @@ class CrystalStore::File < CrystalStore::Model
 
         # update store meta
         store.update_no_free_files -1
-        db.update(0, store.dumps)
+        db.update(store.id.not_nil!, store.dumps)
     end
 
     def self.open(db : Bcdb::Client, path : String, mode : Int16, flags : Int32)
@@ -368,7 +371,7 @@ class CrystalStore::File < CrystalStore::Model
             dest_dir.files = Hash(String, CrystalStore::File).new
         end
 
-        dest_dir.files.not_nil![srcbasename] = src_parent.files.not_nil![srcbasename]
+        dest_dir.files.not_nil![destbasename] = src_parent.files.not_nil![srcbasename]
 
         # update store
         store.update_no_free_files(-1_i64 * src_meta.not_nil!.no_files.to_i64)
@@ -380,7 +383,7 @@ class CrystalStore::File < CrystalStore::Model
         dest_dir.meta.last_modified = now
         db.update(dest_dir.id.not_nil!, dest_dir.dumps)
 
-        db.update(0, store.dumps)
+        db.update(store.id.not_nil!, store.dumps)
     end
 
     def self.mv(db : Bcdb::Client, src : String, dest : String, overwrite : Bool = false)
@@ -414,22 +417,26 @@ class CrystalStore::File < CrystalStore::Model
 
         store = CrystalStore::StoreMeta.get db
 
-        if !rename && dest_dir.dir_exists? srcbasename
+        if !rename && dest_dir.dir_exists? destbasename
             if overwrite
-                self.rm(db, "#{dest}/#{srcbasename}")
+                self.rm(db, dest)
             else
-                raise CrystalStore::FileExistsError.new srcbasename
+                raise CrystalStore::FileExistsError.new destbasename
             end
         end
 
-        if ! rename && dest_dir.file_exists? srcbasename
+        if ! rename && dest_dir.file_exists? destbasename
             if overwrite
-                old_file = dest_dir.files.not_nil!.delete(srcbasename)
+                old_file = dest_dir.files.not_nil!.delete(destbasename)
                 store.update_no_free_files 1
                 store.update_no_free_blocks old_file.not_nil!.meta.not_nil!.size.to_i64
             else
-                raise CrystalStore::FileExistsError.new srcbasename
+                raise CrystalStore::FileExistsError.new destbasename
             end
+        end
+
+        if (rename && !overwrite) && (dest_dir.file_exists?(destbasename) || dest_dir.dir_exists?(destbasename))
+            raise CrystalStore::FileExistsError.new destbasename
         end
 
         if dest_dir.files.nil?
@@ -442,7 +449,7 @@ class CrystalStore::File < CrystalStore::Model
         # update store
         store.update_no_free_files(-1_i64 * src_meta.not_nil!.no_files.to_i64)
         store.update_no_free_blocks (-1_i64 * src_meta.not_nil!.size.to_i64)
-        db.update(0, store.dumps)
+        db.update(store.id.not_nil!, store.dumps)
 
         # update dest_dir
         now = Time.utc.to_unix
@@ -489,7 +496,7 @@ class CrystalStore::File < CrystalStore::Model
         # update store meta
         store.update_no_free_files file.meta.not_nil!.no_files.to_i64
         store.update_no_free_blocks file.meta.not_nil!.size.to_i64
-        db.update(0, store.dumps)
+        db.update(store.id.not_nil!, store.dumps)
     end
 
     def self.truncate(db : Bcdb::Client, path : String)
@@ -526,7 +533,7 @@ class CrystalStore::File < CrystalStore::Model
         # update store meta
         store.update_no_free_files file.meta.no_files.to_i64
         store.update_no_free_blocks file.meta.size.to_i64
-        db.update(0, store.dumps)
+        db.update(store.id.not_nil!, store.dumps)
     end
 end
 
@@ -548,8 +555,15 @@ class CrystalStore::Dir < CrystalStore::Model
     property links : Hash(String, CrystalStore::Link)?
 
     def initialize(@name, @meta, @id=nil, @dirs=nil, @files=nil, @links=nil); end
+    
+    def self.get_root(db : Bcdb::Client)
+        ids = db.find({"root_namespace" => db.namespace})
+        root = self.loads(self.fetch(db, ids[0]))
+        root.id = ids[0]
+        root
+    end
 
-    def self.get_parents(db : Bcdb::Client, path : String)
+    def self.get_parents(db : Bcdb::Client, path : String, create_parents : Bool = false)
         path_obj = Path.new("/", path)
         basename, path = path_obj.basename, path_obj.to_s
         dirnames = path_obj.parts
@@ -557,17 +571,26 @@ class CrystalStore::Dir < CrystalStore::Model
         if path == "/"
             raise CrystalStore::UnsupportedOperation.new "/ has no parent"
         end
-        parent = CrystalStore::Dir.loads(self.fetch(db, 1))
+
+        parent = self.get_root db
         
         parent_parent = nil
 
-        parent.id = 1_u64
         dirnames.shift   # remove root
         dirnames.pop(1)  # remove last item
+        current_path = "/"
         dirnames.each do |dirname|
-            
+            current_path += "#{dirname}/"
             parent_parent = parent
-            parent_parent.id = parent.id
+            parent_parent.id = parent.id.not_nil!
+            if parent.dirs.nil? || !parent.dirs.not_nil!.has_key?(dirname)
+                if create_parents
+                    CrystalStore::Dir.mkdir(db, current_path, 644)
+                    parent = CrystalStore::Dir.loads(self.fetch(db, parent.id.not_nil!))
+                else
+                    raise CrystalStore::FileNotFoundError.new path
+                end
+            end
             parent_pointer = parent.dirs.not_nil![dirname]
             parent_id = parent_pointer.id
            
@@ -591,11 +614,11 @@ class CrystalStore::Dir < CrystalStore::Model
         return false
     end
 
-    def self.mkdir(db : Bcdb::Client, path : String, mode : Int16)
+    def self.mkdir(db : Bcdb::Client, path : String, mode : Int16, create_parents : Bool = false)
         
         basename = Path.new("/", path).basename
 
-        parent, parent_parent = self.get_parents db: db, path: path
+        parent, parent_parent = self.get_parents db: db, path: path, create_parents: create_parents
         
         if parent.dir_exists?(basename) || parent.file_exists?(basename)
             raise CrystalStore::FileExistsError.new path
@@ -632,7 +655,7 @@ class CrystalStore::Dir < CrystalStore::Model
 
         # update store meta
         store.update_no_free_files -1
-        db.update(0, store.dumps)
+        db.update(store.id.not_nil!, store.dumps)
     end
 
     def self.rm(db : Bcdb::Client, path : String)
@@ -670,13 +693,12 @@ class CrystalStore::Dir < CrystalStore::Model
         # update store meta
         store.update_no_free_files dir_pointer.meta.no_files.to_i64
         store.update_no_free_blocks dir_pointer.meta.size.to_i64
-        db.update(0, store.dumps)
+        db.update(store.id.not_nil!, store.dumps)
     end
 
     def self.ls(db : Bcdb::Client, path : String)
         if path == "/"
-            dest_dir = CrystalStore::Dir.loads(self.fetch(db, 1))
-            dest_dir.id = 1
+            dest_dir = self.get_root db
         else
             basename = Path.new("/", path).basename
 
@@ -716,7 +738,27 @@ class CrystalStore::Dir < CrystalStore::Model
 
     end
 
+    
+    # recursively get all files in a path
+    private def self.ls_recursive(db : Bcdb::Client, path : String, all_files : Array(String) = Array(String).new, all_dirs : Array(String) = Array(String).new)
+        list = self.ls(db, path)
+        
+        list.files.each do |f|
+            all_files << Path.new(path, URI.decode(f.name)).to_s 
+        end
+        
+
+        list.dirs.each do |d|
+            p = Path.new(path, URI.decode(d.name)).to_s
+            all_dirs << p
+            self.ls_recursive(db, p, all_files, all_dirs)
+        end
+
+        {"files" =>  all_files, "dirs" => all_dirs}
+    end
+
     def self.cp(db : Bcdb::Client, src : String, dest : String, overwrite : Bool = false)
+        
         # srcparent, srcparent_parent
         srcbasename = Path.new("/", src).basename
         destbasename = Path.new("/", dest).basename
@@ -732,16 +774,11 @@ class CrystalStore::Dir < CrystalStore::Model
         # Get destination
         dest_dir = dest_parent
 
-        # Get src  & meta data
-        src_pointer = src_parent.dirs.not_nil![srcbasename]
-        src = CrystalStore::Dir.loads(self.fetch(db, src_pointer.id))
-        src_meta = src_parent.dirs.not_nil![srcbasename].meta
-
         store = CrystalStore::StoreMeta.get db
 
         if dest_dir.dir_exists? srcbasename
             if overwrite
-                self.rm(db, "#{dest}/#{srcbasename}")
+                self.rm(db, dest)
             else
                 raise CrystalStore::FileExistsError.new srcbasename
             end
@@ -760,22 +797,22 @@ class CrystalStore::Dir < CrystalStore::Model
         if dest_dir.dirs.nil?
             dest_dir.dirs = Hash(String, CrystalStore::DirPointer).new
         end
-        dest_dir.dirs.not_nil![srcbasename] = src_parent.dirs.not_nil![srcbasename]
-        
-        # src dir ref +=1
-        src_meta.no_references +=1
 
-        # update store
-        store.update_no_free_files(-1_i64 * src_meta.no_files.to_i64)
-        store.update_no_free_blocks (-1_i64 * src_meta.size.to_i64)
+        list = self.ls_recursive db: db, path: src
         
-        # update dest_dir
-        now = Time.utc.to_unix
-        dest_dir.meta.last_access = now
-        dest_dir.meta.last_modified = now
-        db.update(dest_dir.id.not_nil!, dest_dir.dumps)
+        # create dest dir
+        self.mkdir(db, dest, 777)
+        
+        list["dirs"].each do |d|
+            path = d.sub(src, dest)
+            self.mkdir(db, dest, 777)
+        end
 
-        db.update(0, store.dumps)
+        list["files"].each do |f|
+            src = f
+            dest = f.sub(src, dest)
+            CrystalStore::File.cp(db, src, dest)
+        end
     end
 
     def self.mv(db : Bcdb::Client, src : String, dest : String, overwrite : Bool = false)
@@ -791,7 +828,6 @@ class CrystalStore::Dir < CrystalStore::Model
         if src_path.parent == dest_path.parent
             rename = true
         end
-
 
         src_parent, src_parent_parent = self.get_parents db: db, path: src
         if rename
@@ -809,22 +845,26 @@ class CrystalStore::Dir < CrystalStore::Model
 
         store = CrystalStore::StoreMeta.get db
 
-        if !rename && dest_dir.dir_exists? srcbasename
+        if !rename && dest_dir.dir_exists? destbasename
             if overwrite
-                self.rm(db, "#{dest}/#{srcbasename}")
+                self.rm(db, dest)
             else
-                raise CrystalStore::FileExistsError.new srcbasename
+                raise CrystalStore::FileExistsError.new destbasename
             end
         end
         
-        if !rename && dest_dir.file_exists? srcbasename
+        if !rename && dest_dir.file_exists? destbasename
             if overwrite
-                old_file = dest_dir.files.not_nil!.delete(srcbasename)
+                old_file = dest_dir.files.not_nil!.delete(destbasename)
                 store.update_no_free_files 1
                 store.update_no_free_blocks old_file.not_nil!.meta.not_nil!.size.to_i64
             else
-                raise CrystalStore::FileExistsError.new srcbasename
+                raise CrystalStore::FileExistsError.new destbasename
             end
+        end
+
+        if (rename && !overwrite) && (dest_dir.file_exists?(destbasename) || dest_dir.dir_exists?(destbasename))
+            raise CrystalStore::FileExistsError.new destbasename
         end
 
         if dest_dir.dirs.nil?

@@ -17,3 +17,7 @@ end
 class CrystalStore::BlockSizeExceededErorr < IO::Error
     def initialize(@err : String = ""); end
 end
+
+class CrystalStore::InitializationError < IO::Error
+    def initialize(@err : String = ""); end
+end
