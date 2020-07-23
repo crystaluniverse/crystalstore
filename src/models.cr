@@ -4,6 +4,7 @@ require "bcdb"
 require "./errors"
 require "./file"
 require "json"
+require "./cache"
 
 class CrystalStore::List
     include MessagePack::Serializable
@@ -29,6 +30,8 @@ end
 class CrystalStore::Model
     include MessagePack::Serializable
 
+    @@cache : CrystalStore::Cache = CrystalStore::Cache.new
+   
     def dumps
         io = IO::Memory.new
         self.to_msgpack(io)
@@ -50,6 +53,9 @@ class CrystalStore::Model
     def self.delete(db : Bcdb::Client, id : UInt64)
         item = self.loads(self.fetch(db, id))
         if item.meta.no_references == 0
+            if @@cache.exists?(id)
+                @@cache.delete(id)
+            end
             db.delete(id)
         end
     end
@@ -263,13 +269,13 @@ class CrystalStore::File < CrystalStore::Model
     property meta : CrystalStore::FileMeta?
 
     property blocks : Array(CrystalStore::BlockMeta) =  Array(CrystalStore::BlockMeta).new
-    
+   
     def initialize (@name, @id=nil, @meta=nil); end
 
     def self.exists?(db : Bcdb::Client, path : String)
         basename = Path.new("/", path).basename
         begin
-            parent, parent_parent = Dir.get_parents db: db, path: path
+            parent, parent_parent = CrystalStore::Dir.get_parents db: db, path: path
             if parent.file_exists?(basename)
                 return true
             end
@@ -279,38 +285,46 @@ class CrystalStore::File < CrystalStore::Model
     end
 
     def self.touch(db : Bcdb::Client, path : String, mode : Int16, flags : Int32, content_type : String, create_parents : Bool = false)
+        if create_parents
+            p = Path.new "/", path
+            p = p.parents
+            p.shift
+            p.each do |item|
+                begin
+                    CrystalStore::Dir.mkdir db: db, path: item.to_s, mode: 777
+                rescue CrystalStore::FileExistsError
+                end
+            end
+        end
         basename = Path.new("/", path).basename
+            parent, parent_parent = Dir.get_parents db: db, path: path
+            if parent.dir_exists?(basename) || parent.file_exists?(basename)
+                raise CrystalStore::FileExistsError.new path
+            end
 
-        parent, parent_parent = Dir.get_parents db: db, path: path, create_parents: create_parents
-        
-        if parent.dir_exists?(basename) || parent.file_exists?(basename)
-            raise CrystalStore::FileExistsError.new path
-        end
+            store = CrystalStore::StoreMeta.get db
+            file_meta = CrystalStore::FileMeta.new block_size: store.block_size, size: 0_u64, is_file: true, mode: mode
+            file_meta.content_type = content_type
+            file = CrystalStore::File.new basename, meta: file_meta
 
-        store = CrystalStore::StoreMeta.get db
-        file_meta = CrystalStore::FileMeta.new block_size: store.block_size, size: 0_u64, is_file: true, mode: mode
-        file_meta.content_type = content_type
-        file = CrystalStore::File.new basename, meta: file_meta
+            # create file    
+            id = db.put(file.dumps).to_u64
+            
+            # add meta to parent
+            if parent.files.nil?
+                parent.files = Hash(String, CrystalStore::File).new
+            end
 
-        # create dir    
-        id = db.put(file.dumps).to_u64
+            parent.files.not_nil![basename] = file
+            
+            parent.meta.last_access = file_meta.last_access
+            parent.meta.last_modified = file_meta.last_modified
+            
+            db.update(parent.id.not_nil!, parent.dumps)
 
-        # add meta to parent
-        
-        if parent.files.nil?
-            parent.files = Hash(String, CrystalStore::File).new
-        end
-
-        parent.files.not_nil![basename] = file
-          
-        parent.meta.last_access = file_meta.last_access
-        parent.meta.last_modified = file_meta.last_modified
-        
-        db.update(parent.id.not_nil!, parent.dumps)
-
-        # update store meta
-        store.update_no_free_files -1
-        db.update(store.id.not_nil!, store.dumps)
+            # update store meta
+            store.update_no_free_files -1
+            db.update(store.id.not_nil!, store.dumps)
     end
 
     def self.open(db : Bcdb::Client, path : String, mode : Int16, flags : Int32)
@@ -554,16 +568,24 @@ class CrystalStore::Dir < CrystalStore::Model
     @[MessagePack::Field(nilable: true)]
     property links : Hash(String, CrystalStore::Link)?
 
-    def initialize(@name, @meta, @id=nil, @dirs=nil, @files=nil, @links=nil); end
+    @@root : UInt64 = 0_u64
+
+    def initialize(@name, @meta, @id=nil, @dirs=nil, @files=nil, @links=nil);
+        
+    end
     
     def self.get_root(db : Bcdb::Client)
+        return @@cache.get(1_u64) if @@cache.exists?(1_u64)
+
         ids = db.find({"root_namespace" => db.namespace})
         root = self.loads(self.fetch(db, ids[0]))
         root.id = ids[0]
+        @@root = root.id.not_nil!
+        @@cache.set(@@root, root)
         root
     end
 
-    def self.get_parents(db : Bcdb::Client, path : String, create_parents : Bool = false)
+    def self.get_parents(db : Bcdb::Client, path : String)
         path_obj = Path.new("/", path)
         basename, path = path_obj.basename, path_obj.to_s
         dirnames = path_obj.parts
@@ -573,7 +595,7 @@ class CrystalStore::Dir < CrystalStore::Model
         end
 
         parent = self.get_root db
-        
+
         parent_parent = nil
 
         dirnames.shift   # remove root
@@ -584,17 +606,16 @@ class CrystalStore::Dir < CrystalStore::Model
             parent_parent = parent
             parent_parent.id = parent.id.not_nil!
             if parent.dirs.nil? || !parent.dirs.not_nil!.has_key?(dirname)
-                if create_parents
-                    CrystalStore::Dir.mkdir(db, current_path, 644)
-                    parent = CrystalStore::Dir.loads(self.fetch(db, parent.id.not_nil!))
-                else
-                    raise CrystalStore::FileNotFoundError.new path
-                end
+                raise CrystalStore::FileNotFoundError.new path
             end
             parent_pointer = parent.dirs.not_nil![dirname]
             parent_id = parent_pointer.id
-           
-            parent = CrystalStore::Dir.loads(self.fetch(db, parent_id))
+            if @@cache.exists?(parent_id)
+                parent = @@cache.get(parent_id)
+            else
+                parent = CrystalStore::Dir.loads(self.fetch(db, parent_id))
+                @@cache.set(parent_id, parent)
+            end
             parent.id = parent_id
         end
         return parent, parent_parent
@@ -615,11 +636,22 @@ class CrystalStore::Dir < CrystalStore::Model
     end
 
     def self.mkdir(db : Bcdb::Client, path : String, mode : Int16, create_parents : Bool = false)
+        if create_parents
+            p = Path.new "/", path
+            p = p.parents
+            p.shift
+            p.each do |item|
+                begin
+                    self.mkdir db: db, path: item.to_s, mode: 777
+                rescue CrystalStore::FileExistsError
+                end
+            end
+        end
+        
         
         basename = Path.new("/", path).basename
-
-        parent, parent_parent = self.get_parents db: db, path: path, create_parents: create_parents
         
+        parent, parent_parent = self.get_parents db: db, path: path
         if parent.dir_exists?(basename) || parent.file_exists?(basename)
             raise CrystalStore::FileExistsError.new path
         end
@@ -639,7 +671,7 @@ class CrystalStore::Dir < CrystalStore::Model
         end
 
         parent.dirs.not_nil![basename] = dir_pointer
-          
+        
         parent.meta.last_access = dir_meta.last_access
         parent.meta.last_modified = dir_meta.last_modified
         
@@ -647,7 +679,6 @@ class CrystalStore::Dir < CrystalStore::Model
 
         # update parent meta in the dir pointer in parent parent
         if !parent_parent.nil?
-            parent_parent = parent_parent.not_nil!
             parent_parent.dirs.not_nil![parent.name].meta.last_access = dir_meta.last_access
             parent_parent.dirs.not_nil![parent.name].meta.last_modified = dir_meta.last_modified
             db.update(parent_parent.id.not_nil!, parent_parent.dumps)
