@@ -319,7 +319,6 @@ class CrystalStore::File < CrystalStore::Model
             
             parent.meta.last_access = file_meta.last_access
             parent.meta.last_modified = file_meta.last_modified
-            
             db.update(parent.id.not_nil!, parent.dumps)
 
             # update store meta
@@ -570,7 +569,7 @@ class CrystalStore::Dir < CrystalStore::Model
 
     @@root : UInt64 = 0_u64
 
-    def initialize(@name, @meta, @id=nil, @dirs=nil, @files=nil, @links=nil);
+    def initialize(@name, @meta, @id=nil, @dirs=nil, @files=Hash(String, CrystalStore::File).new, @links=nil);
         
     end
     
