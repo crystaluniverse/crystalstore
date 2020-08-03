@@ -148,5 +148,9 @@ describe CrystalStore::Store do
     data2 = String.new(s)
 
     data.should eq data2
+
+    # links
+
+    
 end
 end

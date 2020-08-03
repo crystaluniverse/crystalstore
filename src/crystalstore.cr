@@ -117,6 +117,10 @@ class CrystalStore::Store
     CrystalStore::Dir.mv(@db, src, dest, overwrite)
   end
 
+  def dir_exists?(path : String)
+    CrystalStore::Dir.exists?(@db, path)
+  end
+
   def file_create(path : String, mode : Int16, flags : Int32, content_type : String, create_parents : Bool = false)
     CrystalStore::File.touch(@db, path, mode, flags, content_type, create_parents)
   end
@@ -157,7 +161,7 @@ class CrystalStore::Store
     CrystalStore::Link.symlink(@db, src, dest)
   end
 
-  def unlink(src : String)
+  def unlink(path : String)
     CrystalStore::Link.unlink(@db, path)
   end
 

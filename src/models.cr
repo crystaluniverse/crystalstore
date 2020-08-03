@@ -14,13 +14,14 @@ class CrystalStore::List
     property last_modified : Int64
     property files : Array(CrystalStore::File)
     property dirs : Array(CrystalStore::DirPointer)
-    
+    property links : Array(CrystalStore::Link)
     def initialize(
         @size,
         @mode,
         @last_modified,
         @files=Array(CrystalStore::File).new,
-        @dirs=Array(CrystalStore::DirPointer).new
+        @dirs=Array(CrystalStore::DirPointer).new,
+        @links=Array(CrystalStore::Link).new,
     )
 
     end
@@ -219,27 +220,90 @@ class CrystalStore::DirPointer < CrystalStore::Model
 end
 
 class CrystalStore::Link < CrystalStore::Model
-    property id : UInt64
+    property id : UInt64?
     property name : String
+    property src : String
     property is_dir : Bool
     property is_symlink : Bool
-    property meta : CrystalStore::FileMeta
+    property meta : CrystalStore::FileMeta?
 
-    def initialize (@id, @name, @is_dir, @is_symlink, @meta); end
+    def initialize (@name, @src, @is_dir, @is_symlink, @meta=nil, @id=nil); end
 
-    def link(db : Bcdb::Client, src : String, dest : String)
-    
+    def self.link(db : Bcdb::Client, src : String, dest : String)
+        srcbasename = Path.new("/", src).basename
+        src_parent, src_parent_parent = CrystalStore::Dir.get_parents db: db, path: src
+        
+        if src_parent.dir_exists? srcbasename
+            raise CrystalStore::UnsupportedOperation.new "hard links not supported for directories"
+        elsif !src_parent.file_exists? srcbasename
+            raise CrystalStore::FileNotFoundError.new src
+        end
+
+        destbasename = Path.new("/", dest).basename
+        dest_parent, dest_parent_parent = CrystalStore::Dir.get_parents db: db, path: dest
+        dest_dir = dest_parent
+ 
+        if dest_dir.dir_exists? destbasename || dest_dir.file_exists? destbasename 
+            raise CrystalStore::FileExistsError.new destbasename
+        end
+ 
+        if dest_dir.links.nil?
+            dest_dir.links = Hash(String, CrystalStore::Link).new
+        end
+        dest_dir.links[destbasename] = CrystalStore::Link.new src: src, is_dir: false, is_symlink: false
+        src_parent.files.not_nil![srcbasename].meta.no_references += 1
+        db.update(dest_dir.id.not_nil!, dest_dir.dumps)
+        db.update(src_parent.id.not_nil!, src_parent.dumps)
     end
     
-    def symlink(db : Bcdb::Client, src : String, dest : String)
+    def self.symlink(db : Bcdb::Client, src : String, dest : String)
+        srcbasename = Path.new("/", src).basename
+        src_parent, src_parent_parent = CrystalStore::Dir.get_parents db: db, path: src
+        
+        is_dir = false
+        id = 0_u64
 
+        if src_parent.dir_exists? srcbasename
+            is_dir = true
+            id = src_parent.dirs.not_nil![srcbasename].id
+        elsif src_parent.file_exists? srcbasename
+            is_dir = false
+        else
+            raise CrystalStore::FileNotFoundError.new src
+        end
+
+        destbasename = Path.new("/", dest).basename
+        dest_parent, dest_parent_parent = CrystalStore::Dir.get_parents db: db, path: dest
+        dest_dir = dest_parent
+ 
+        if (dest_dir.dir_exists? destbasename) || (dest_dir.file_exists? destbasename)
+            raise CrystalStore::FileExistsError.new destbasename
+        end
+ 
+        if dest_dir.links.nil?
+            dest_dir.links = Hash(String, CrystalStore::Link).new
+        end
+        dest_dir.links.not_nil![destbasename] = CrystalStore::Link.new id: id, name: destbasename, src: src, is_dir: is_dir, is_symlink: true
+        db.update(dest_dir.id.not_nil!, dest_dir.dumps)
     end
 
-    def unlink(db : Bcdb::Client, src : String)
+    def self.unlink(db : Bcdb::Client, path : String)
+        basename = Path.new("/", path).basename
+        parent, _ = CrystalStore::Dir.get_parents db: db, path: path
+        
+        if !parent.link_exists? basename
+             raise CrystalStore::FileNotFoundError.new path
+        end
 
+        parent.links.not_nil!.delete(basename)
+        db.update(parent.id.not_nil!, parent.dumps)
     end
 
-    def readlink(db : Bcdb::Client, path : String)
+    def self.readlink(db : Bcdb::Client, path : String)
+        
+        if self.is_symlink
+            return self.path
+        end
 
     end
 end
@@ -604,11 +668,29 @@ class CrystalStore::Dir < CrystalStore::Model
             current_path += "#{dirname}/"
             parent_parent = parent
             parent_parent.id = parent.id.not_nil!
-            if parent.dirs.nil? || !parent.dirs.not_nil!.has_key?(dirname)
+
+            is_link = false
+            found = false
+
+            if ! parent.dirs.nil? && parent.dirs.not_nil!.has_key?(dirname)
+                is_link = false
+                found = true
+            elsif ! parent.links.nil? && parent.links.not_nil!.has_key?(dirname)
+                is_link = true
+                found = true
+            end
+
+            if !found            
                 raise CrystalStore::FileNotFoundError.new path
             end
-            parent_pointer = parent.dirs.not_nil![dirname]
-            parent_id = parent_pointer.id
+
+            if is_link
+                parent_id = parent.links.not_nil![dirname].id.not_nil!
+            else
+                parent_pointer = parent.dirs.not_nil![dirname]
+                parent_id = parent_pointer.id
+            end
+
             if @@cache.exists?(parent_id)
                 parent = @@cache.get(parent_id)
             else
@@ -620,6 +702,18 @@ class CrystalStore::Dir < CrystalStore::Model
         return parent, parent_parent
     end
 
+    def self.exists?(db : Bcdb::Client, path : String)
+        basename = Path.new("/", path).basename
+        begin
+            parent, parent_parent = CrystalStore::Dir.get_parents db: db, path: path
+            if parent.dir_exists?(basename)
+                return true
+            end
+        rescue exception; 
+        end
+        return false
+    end
+
     def file_exists?(name : String)
         if !self.files.nil? && self.files.not_nil!.has_key? name
             return true
@@ -629,6 +723,13 @@ class CrystalStore::Dir < CrystalStore::Model
 
     def dir_exists?(name : String)
         if !self.dirs.nil? && self.dirs.not_nil!.has_key? name
+            return true
+        end
+        return false
+    end
+
+    def link_exists?(name : String)
+        if !self.links.nil? && self.links.not_nil!.has_key? name
             return true
         end
         return false
@@ -734,19 +835,30 @@ class CrystalStore::Dir < CrystalStore::Model
 
             parent, parent_parent = self.get_parents db: db, path: path
             
-            if !parent.dir_exists?(basename)
+            is_dir = true
+            if parent.link_exists?(basename)
+                is_dir = false
+            elsif !parent.dir_exists?(basename)
                 raise CrystalStore::FileNotFoundError.new path
             end
     
             # Get destination
-            dest_pointer = parent.dirs.not_nil![basename]
-            dest_dir = CrystalStore::Dir.loads(self.fetch(db, dest_pointer.id))
-            dest_dir.id = dest_pointer.id
+            if is_dir
+                dest_pointer = parent.dirs.not_nil![basename]
+                dest_dir = CrystalStore::Dir.loads(self.fetch(db, dest_pointer.id))
+                dest_dir.id = dest_pointer.id
+            
+            else # link
+                link = parent.links.not_nil![basename]
+                dest_dir = CrystalStore::Dir.loads(self.fetch(db, link.id.not_nil!))
+                dest_dir.id = link.id.not_nil!
+            end
         end
         
         dest_dir = dest_dir.not_nil!
         files = Array(CrystalStore::File).new
         dirs = Array(CrystalStore::DirPointer).new
+        links = Array(CrystalStore::Link).new
 
         if !dest_dir.dirs.nil? 
             dest_dir.dirs.not_nil!.each_key do |k|
@@ -764,7 +876,15 @@ class CrystalStore::Dir < CrystalStore::Model
             end
         end
 
-        CrystalStore::List.new  size: dest_dir.meta.size,  mode: dest_dir.meta.mode, last_modified: dest_dir.meta.last_modified, files: files, dirs: dirs
+        if !dest_dir.links.nil? 
+            dest_dir.links.not_nil!.each_key do |k|
+                item = dest_dir.links.not_nil![k]
+                item.name = k
+                links << item
+            end
+        end
+
+        CrystalStore::List.new  size: dest_dir.meta.size,  mode: dest_dir.meta.mode, last_modified: dest_dir.meta.last_modified, files: files, dirs: dirs, links: links
 
     end
 
