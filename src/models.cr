@@ -374,6 +374,8 @@ class CrystalStore::File < CrystalStore::Model
             # create file    
             id = db.put(file.dumps).to_u64
             
+            file.id = id
+
             # add meta to parent
             if parent.files.nil?
                 parent.files = Hash(String, CrystalStore::File).new
@@ -401,6 +403,7 @@ class CrystalStore::File < CrystalStore::Model
         if !parent.file_exists?(basename)
             raise CrystalStore::FileNotFoundError.new path
         end
+        parent.files.not_nil![basename].meta.not_nil!.id = parent.files.not_nil![basename].id.not_nil!
         parent.files.not_nil![basename].meta.not_nil!.name = basename
         parent.files.not_nil![basename].meta
     end
