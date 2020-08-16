@@ -20,8 +20,15 @@ class CrystalStore::FileDescriptor < IO::Memory
         basename = Path.new("/", path).basename
         parent, _ = CrystalStore::Dir.get_parents db: db, path: path
         
-        if !parent.file_exists?(basename)
+        is_link = parent.link_exists?(basename)
+        is_file = parent.file_exists?(basename)
+        
+        if !is_file && !is_link
             raise CrystalStore::FileNotFoundError.new path
+        end
+        
+        if is_link
+            parent, _ = CrystalStore::Dir.get_parents db: db, path: parent.links.not_nil![basename].src
         end
         
         @parent = parent

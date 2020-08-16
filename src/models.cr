@@ -400,12 +400,18 @@ class CrystalStore::File < CrystalStore::Model
         basename = Path.new("/", path).basename
         parent, parent_parent = CrystalStore::Dir.get_parents db: db, path: path
         
-        if !parent.file_exists?(basename)
+        is_link = parent.link_exists?(basename)
+        is_file = parent.file_exists?(basename)
+        if !is_file && !is_link
             raise CrystalStore::FileNotFoundError.new path
         end
-        parent.files.not_nil![basename].meta.not_nil!.id = parent.files.not_nil![basename].id.not_nil!
-        parent.files.not_nil![basename].meta.not_nil!.name = basename
-        parent.files.not_nil![basename].meta
+        if is_file
+            parent.files.not_nil![basename].meta.not_nil!.id = parent.files.not_nil![basename].id.not_nil!
+            parent.files.not_nil![basename].meta.not_nil!.name = basename
+            parent.files.not_nil![basename].meta
+        else
+            self.stats(db, parent.links.not_nil![basename].src)
+        end
     end
 
     def self.cp(db : Bcdb::Client, src : String, dest : String, overwrite : Bool = false)
@@ -1044,12 +1050,18 @@ class CrystalStore::Dir < CrystalStore::Model
         basename = Path.new("/", path).basename
         parent, parent_parent = self.get_parents db: db, path: path
         
-        if !parent.dir_exists?(basename)
+        is_dir = parent.dir_exists?(basename)
+        is_link = parent.link_exists?(basename)
+
+        if !is_dir && !is_link
             raise CrystalStore::FileNotFoundError.new path
         end
-        parent.dirs.not_nil![basename].meta.not_nil!.name = basename
-        parent.dirs.not_nil![basename].meta
-
+        if is_dir
+            parent.dirs.not_nil![basename].meta.not_nil!.name = basename
+            parent.dirs.not_nil![basename].meta
+        else
+            self.stats(db, parent.links.not_nil![basename].src)
+        end
     end
 
     def self.access(db : Bcdb::Client, path : String)
