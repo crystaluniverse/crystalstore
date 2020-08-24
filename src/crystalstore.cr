@@ -49,6 +49,11 @@ class CrystalStore::Store
         raise CrystalStore::InitializationError.new "Can not reinitialize with shorter max_filename current=#{store_meta.max_filename} & provided=#{@max_filename}"
       end
 
+      # TODO: REMOVE ME: Properly fix the counters of blocks on writes/copy/move/delete
+      if store_meta.no_blocks < store_meta.no_free_blocks
+        store_meta.no_blocks = store_meta.no_free_blocks
+      end
+
       used_blocks = store_meta.no_blocks - store_meta.no_free_blocks
 
       if @max_no_blocks < used_blocks
